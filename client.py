@@ -5,8 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-host = os.getenv('HOST')
-port = int(os.getenv('PORT'))
+host = os.getenv("HOST")
+port = int(os.getenv("PORT"))
+
 
 def recv_from_server(s):
     while True:
@@ -20,25 +21,30 @@ def recv_from_server(s):
             print(f"Unexpected error: {e}")
             break
 
+
 def connect_to_server():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect((host, port))
-    print('Connected to server!')
+    print("Connected to server!")
 
     receive_thread = threading.Thread(target=recv_from_server, args=(s,), daemon=True)
     receive_thread.start()
 
     while True:
         try:
-            text = input('')
+            text = input("")
             s.sendall(text.encode())
-            if text == 'logout':
+            if text == "logout":
                 break
 
         except OSError as e:
             print(f"Unexpected error: {e}")
             break
 
+    s.shutdown(
+        socket.SHUT_RDWR
+    )  # signal to the receive_thread that no more data will be sent or received
     s.close()
+
 
 connect_to_server()
