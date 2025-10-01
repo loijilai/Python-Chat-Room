@@ -2,6 +2,17 @@ import socket
 import os
 import threading
 from dotenv import load_dotenv
+import ssl
+
+from sqlalchemy import (
+    create_engine,
+    MetaData,
+    Table,
+    Column,
+    Integer,
+    String,
+)
+
 
 load_dotenv()
 
@@ -12,25 +23,39 @@ class RoomError(Exception):
 
 class ChatData:
     def __init__(self):
-        self.users = {}  # username -> password
         self.online_users = {}  # username -> socket
         self.chatrooms = {"lobby": []}  # room_name -> [user1, user2, ...]
         self.lock = threading.RLock()
-        # TODO: for debug
-        self.users["abc"] = "123"
-        self.users["bcd"] = "123"
+
+        DATABASE_URL = os.getenv("DATABASE_URL")
+        self.engine = create_engine(DATABASE_URL, echo=True)
+        metadata_obj = MetaData()
+        self.users = Table(
+            "users",
+            metadata_obj,
+            Column("id", Integer, primary_key=True),
+            Column("username", String, nullable=False),
+            Column("password", String, nullable=False),
+        )
+        metadata_obj.create_all(self.engine)
 
     def is_registered(self, username: str):
-        with self.lock:
-            return username in self.users
+        stmt = self.users.select().where(self.users.c.username == username)
+        with self.engine.connect() as conn:
+            result = conn.execute(stmt).fetchone()
+            return result is not None
 
     def add_user(self, username, password):
-        with self.lock:
-            self.users[username] = password
+        stmt = self.users.insert().values(username=username, password=password)
+        with self.engine.connect() as conn:
+            conn.execute(stmt)
+            conn.commit()
 
     def check_password(self, username, password):
-        with self.lock:
-            return self.users[username] == password
+        stmt = self.users.select().where(self.users.c.username == username)
+        with self.engine.connect() as conn:
+            result = conn.execute(stmt).fetchone()
+            return result.password == password if result else False
 
     def add_online_user(self, username, socket):
         with self.lock:
@@ -111,10 +136,8 @@ class ClientHandler:
 
     def send(self, text, socket=None):
         try:
-            if socket is None:
-                self.conn.sendall(text.encode("utf-8"))
-            else:
-                socket.sendall(text.encode("utf-8"))
+            target = self.conn if socket is None else socket
+            target.sendall(text.encode("utf-8"))
         except Exception as e:
             print(f"send error {e}")
             self.active = False
@@ -272,12 +295,16 @@ def main():
 
     chat_data = ChatData()
 
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile="server.crt", keyfile="server.key")
+
     while True:
         try:
             conn, addr = server.accept()
+            sconn = context.wrap_socket(conn, server_side=True)
             print(f"Connected by {addr}")
             thread = threading.Thread(
-                target=handle_client, args=(conn, addr, chat_data)
+                target=handle_client, args=(sconn, addr, chat_data)
             )
             thread.start()
         except KeyboardInterrupt:
