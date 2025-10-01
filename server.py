@@ -2,23 +2,95 @@ import socket
 import os
 import threading
 from dotenv import load_dotenv
-from utils import format_room
 
 load_dotenv()
 
-users = {}  # username -> password
-online_users = {}  # username -> socket
-chatrooms = {"lobby": []}  # room_name -> [user1, user2, ...]
+
+class RoomError(Exception):
+    pass
+
+
+class ChatData:
+    def __init__(self):
+        self.users = {}  # username -> password
+        self.online_users = {}  # username -> socket
+        self.chatrooms = {"lobby": []}  # room_name -> [user1, user2, ...]
+        self.lock = threading.RLock()
+        # TODO: for debug
+        self.users["abc"] = "123"
+        self.users["bcd"] = "123"
+
+    def is_registered(self, username: str):
+        with self.lock:
+            return username in self.users
+
+    def add_user(self, username, password):
+        with self.lock:
+            self.users[username] = password
+
+    def check_password(self, username, password):
+        with self.lock:
+            return self.users[username] == password
+
+    def add_online_user(self, username, socket):
+        with self.lock:
+            self.online_users[username] = socket
+
+    def enter_room(self, username, destination, source=None):
+        with self.lock:
+            if source and source not in self.chatrooms:
+                raise RoomError(f"Source room {source} not found")
+
+            if destination not in self.chatrooms:
+                raise RoomError(f"Destination room {destination} not found")
+
+            if username in self.chatrooms[destination]:
+                raise RoomError(f"You are already in {destination}")
+
+            if source and username in self.chatrooms[source]:
+                self.chatrooms[source].remove(username)
+            self.chatrooms[destination].append(username)
+
+    def create_room(self, room_name):
+        with self.lock:
+            if room_name in self.chatrooms:
+                raise RoomError(f"{room_name} already exists")
+            self.chatrooms[room_name] = []
+
+    def get_room_users(self, room_name):
+        with self.lock:
+            return self.chatrooms.get(room_name, [])
+
+    def get_socket(self, username):
+        with self.lock:
+            return self.online_users.get(username, None)
+
+    def get_room_info(self, room_name=None):
+        lines = []
+        with self.lock:
+            if not room_name:
+                for room_name, users in self.chatrooms.items():
+                    lines.append(f"Room: {room_name}")
+                    for user in users:
+                        lines.append(f"  - {user}")
+                    lines.append("")
+            else:
+                lines.append(f"Your current room: {room_name}")
+                for user in self.chatrooms[room_name]:
+                    lines.append(f"  - {user}")
+                lines.append("")
+        return "\n" + "\n".join(lines)
 
 
 class ClientHandler:
-    def __init__(self, conn, addr):
+    def __init__(self, conn, addr, chat_data: ChatData):
         self.conn = conn
         self.addr = addr
         self.username = None
         self.chatroom = None
         self.state = "auth"
         self.active = True
+        self.chat_data = chat_data
 
     def run(self):
         try:
@@ -59,8 +131,9 @@ class ClientHandler:
             self.active = False
 
     def broadcast(self, text):
-        for username in chatrooms[self.chatroom]:
-            socket = online_users[username]
+        room_users = self.chat_data.get_room_users(self.chatroom)
+        for username in room_users:
+            socket = self.chat_data.get_socket(username)
             self.send(f"{self.username}: {text}", socket)
 
     def auth(self):
@@ -74,7 +147,7 @@ class ClientHandler:
             username = self.recv()
             if username is None:
                 return "auth"
-            if username in users:
+            if self.chat_data.is_registered(username):
                 self.send("Username already in use, try another one")
                 return "auth"
 
@@ -82,7 +155,7 @@ class ClientHandler:
             password = self.recv()
             if password is None:
                 return "auth"
-            users[username] = password
+            self.chat_data.add_user(username, password)
             self.send("Register successfully! You can now login")
 
         elif cmd == "login":
@@ -90,56 +163,58 @@ class ClientHandler:
             username = self.recv()
             if username is None:
                 return "auth"
-            if username not in users:
-                self.send("Username not exists, try login first")
+            if not self.chat_data.is_registered(username):
+                self.send("Username not exists, try register first")
                 return "auth"
             self.send("Enter your password:")
             password = self.recv()
             if password is None:
                 return "auth"
-            if password != users[username]:
+            if not self.chat_data.check_password(username, password):
                 self.send("Wrong password!")
                 return "auth"
-            self.send("Login successfully! You can now chat!")
+            self.send("Login successfully! Redirecting to the lobby")
+            self.chat_data.add_online_user(username, self.conn)
+            self.chat_data.enter_room(
+                username, destination="lobby", source=self.chatroom
+            )
             self.username = username
-            online_users[username] = self.conn
-            chatrooms["lobby"].append(username)
+            self.chatroom = "lobby"
             return "lobby"
+        else:
+            self.send(f"Invalid command: {cmd}")
 
         return "auth"
 
     def lobby(self):
-        info = format_room(chatrooms)
-        self.send(info)
-        self.send("Command: 'list', 'enter <room_name>', 'create <room_name>'")
+        self.send("\nCommand: 'list', 'enter <room_name>', 'create <room_name>'")
         cmd = self.recv()
         if cmd is None:
             return "lobby"
         cmd = cmd.lower()
         if cmd == "list":
-            info = format_room(chatrooms)
+            info = self.chat_data.get_room_info()
             self.send(info)
         elif cmd.startswith("enter"):
             _, room_name = cmd.split(" ")
-            if room_name not in chatrooms:
-                self.send(f"{room_name} not found")
-            elif room_name == "lobby":
-                self.send("you are already in lobby")
-            else:
+            try:
+                self.chat_data.enter_room(
+                    self.username, destination=room_name, source=self.chatroom
+                )
                 self.chatroom = room_name
-                self.send(f"Welcome to {self.chatroom}")
-                chatrooms[room_name].append(self.username)
-                chatrooms["lobby"].remove(self.username)
+                self.send(f"Welcome to {room_name}")
                 return "chat"
+            except RoomError as e:
+                self.send(str(e))
         elif cmd.startswith("create"):
             _, room_name = cmd.split(" ")
-            if room_name in chatrooms:
-                self.send(f"{room_name} already exists")
-            else:
+            try:
+                self.chat_data.create_room(room_name)
                 self.send(f"{room_name} created successfully")
-                chatrooms[room_name] = []
+            except RoomError as e:
+                self.send(str(e))
         else:
-            print(f"Unknown command {cmd}")
+            self.send(f"Invalid command: {cmd}")
         print(f"{self.username}: {cmd}")
         return "lobby"
 
@@ -149,29 +224,40 @@ class ClientHandler:
         if cmd is None:
             return "chat"
         if cmd.lower().startswith("exit"):
-            self.send(f"Exit {self.chatroom}, back to lobby")
-            chatrooms[self.chatroom].remove(self.username)
-            chatrooms["lobby"].append(self.username)
-            self.chatroom = "lobby"
+            try:
+                self.chat_data.enter_room(
+                    self.username, destination="lobby", source=self.chatroom
+                )
+                self.send(f"Exit {self.chatroom}, back to lobby")
+                self.chatroom = "lobby"
+                return "lobby"
+            except RoomError as e:
+                self.send(str(e))
+
             return "lobby"
         elif cmd.lower().startswith("list"):
-            info = format_room(chatrooms, self.chatroom)
+            info = self.chat_data.get_room_info(self.chatroom)
             self.send(info)
         elif cmd.lower().startswith("msgall"):
-            _, text = cmd.split(" ")
+            _, text = cmd.split(" ")  # TODO
             self.broadcast(text)
         elif cmd.lower().startswith("msg"):
-            _, username, text = cmd.split(" ")
-            socket = online_users.get(username, None)
+            _, username, text = cmd.split(" ")  # TODO
+            if username not in self.chat_data.get_room_users(self.chatroom):
+                self.send(f"{username} not in {self.chatroom}")
+                return "chat"
+            socket = self.chat_data.get_socket(username)
             if socket:
                 self.send(f"{self.username}: {text}", socket)
             else:
                 self.send(f"{username} not exists")
+        else:
+            self.send(f"Invalid command: {cmd}")
         return "chat"
 
 
-def handle_client(conn, addr):
-    handler = ClientHandler(conn, addr)
+def handle_client(conn, addr, chat_data: ChatData):
+    handler = ClientHandler(conn, addr, chat_data)
     handler.run()
 
 
@@ -184,15 +270,15 @@ def main():
     server.listen()
     print(f"Server start listening on ({host}, {port})...")
 
-    # TODO: for debug
-    users["abc"] = "123"
-    users["bcd"] = "123"
+    chat_data = ChatData()
 
     while True:
         try:
             conn, addr = server.accept()
             print(f"Connected by {addr}")
-            thread = threading.Thread(target=handle_client, args=(conn, addr))
+            thread = threading.Thread(
+                target=handle_client, args=(conn, addr, chat_data)
+            )
             thread.start()
         except KeyboardInterrupt:
             print("Server ctrl+c exit")
