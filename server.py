@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
 )
+from utils import hash_password
 
 
 load_dotenv()
@@ -46,7 +47,9 @@ class ChatData:
             return result is not None
 
     def add_user(self, username, password):
-        stmt = self.users.insert().values(username=username, password=password)
+        stmt = self.users.insert().values(
+            username=username, password=hash_password(password)
+        )
         with self.engine.connect() as conn:
             conn.execute(stmt)
             conn.commit()
@@ -55,7 +58,7 @@ class ChatData:
         stmt = self.users.select().where(self.users.c.username == username)
         with self.engine.connect() as conn:
             result = conn.execute(stmt).fetchone()
-            return result.password == password if result else False
+            return result.password == hash_password(password) if result else False
 
     def add_online_user(self, username, socket):
         with self.lock:
