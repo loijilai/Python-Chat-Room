@@ -3,6 +3,7 @@ import os
 import threading
 from dotenv import load_dotenv
 import ssl
+import json
 
 from sqlalchemy import (
     create_engine,
@@ -12,7 +13,8 @@ from sqlalchemy import (
     Integer,
     String,
 )
-from utils import hash_password
+from utils import hash_password, Message
+from typing import Optional, Any
 
 
 load_dotenv()
@@ -22,6 +24,22 @@ class RoomError(Exception):
     pass
 
 
+class MessageFactory:
+    @staticmethod
+    def ok(
+        type: str, data: Optional[dict[str, Any]] = None, message: Optional[str] = None
+    ) -> dict:
+        return Message(type=type, status="ok", message=message, data=data).to_dict()
+
+    @staticmethod
+    def error(type: str, message: str) -> dict:
+        return Message(type=type, status="error", message=message).to_dict()
+
+    @staticmethod
+    def push():
+        pass
+
+
 class ChatData:
     def __init__(self):
         self.online_users = {}  # username -> socket
@@ -29,7 +47,7 @@ class ChatData:
         self.lock = threading.RLock()
 
         DATABASE_URL = os.getenv("DATABASE_URL")
-        self.engine = create_engine(DATABASE_URL, echo=True)
+        self.engine = create_engine(DATABASE_URL)
         metadata_obj = MetaData()
         self.users = Table(
             "users",
@@ -156,6 +174,40 @@ class ClientHandler:
             print(f"recv error {e}")
             self.active = False
 
+    def new_send(self, message_dict, socket=None):
+        try:
+            data = json.dumps(message_dict).encode("utf-8")
+            header = len(data).to_bytes(4, byteorder="big")
+            target = self.conn if socket is None else socket
+            target.sendall(header + data)
+        except Exception as e:
+            print(f"send error {e}")
+            self.active = False
+
+    def new_recv(self) -> str | None:
+        header = self.recv_exactly(4)
+        if header is None:
+            return None
+        length = int.from_bytes(header, "big")
+        payload = self.recv_exactly(length)
+        if payload is None:
+            return None
+        return json.loads(payload.decode("utf-8"))
+
+    def recv_exactly(self, n):
+        buffer = b""
+        try:
+            while len(buffer) < n:
+                data = self.conn.recv(n - len(buffer))
+                if not data:
+                    self.active = False
+                    return None
+                buffer += data
+            return buffer
+        except Exception as e:
+            print(f"recv error {e}")
+            self.active = False
+
     def broadcast(self, text):
         room_users = self.chat_data.get_room_users(self.chatroom)
         for username in room_users:
@@ -163,43 +215,45 @@ class ClientHandler:
             self.send(f"{self.username}: {text}", socket)
 
     def auth(self):
-        self.send("\nType 'login' or 'register' to use the chatroom")
-        cmd = self.recv()
-        if cmd is None:
+        request = self.new_recv()
+        if request is None:
             return "auth"
-        cmd = cmd.lower()
-        if cmd == "register":
-            self.send("Enter your username:")
-            username = self.recv()
-            if username is None:
-                return "auth"
+        msg = Message(**request)
+        username = msg.data["username"]
+        password = msg.data["password"]
+        if msg.type == "register":
             if self.chat_data.is_registered(username):
-                self.send("Username already in use, try another one")
-                return "auth"
+                self.new_send(
+                    MessageFactory.error(
+                        "register", "Username already in use, try another one"
+                    )
+                )
+            else:
+                self.chat_data.add_user(username, password)
+                self.new_send(
+                    MessageFactory.ok(
+                        "register", message="Register successfully! You can now login"
+                    )
+                )
 
-            self.send("Enter your password:")
-            password = self.recv()
-            if password is None:
-                return "auth"
-            self.chat_data.add_user(username, password)
-            self.send("Register successfully! You can now login")
-
-        elif cmd == "login":
-            self.send("Enter your username:")
-            username = self.recv()
-            if username is None:
-                return "auth"
+        elif msg.type == "login":
             if not self.chat_data.is_registered(username):
-                self.send("Username not exists, try register first")
-                return "auth"
-            self.send("Enter your password:")
-            password = self.recv()
-            if password is None:
+                self.new_send(
+                    MessageFactory.error(
+                        "login", "Username not exists, try register first"
+                    )
+                )
                 return "auth"
             if not self.chat_data.check_password(username, password):
-                self.send("Wrong password!")
+                self.new_send(MessageFactory.error("login", "Invalid password"))
                 return "auth"
-            self.send("Login successfully! Redirecting to the lobby")
+            self.new_send(
+                MessageFactory.ok(
+                    "login",
+                    {"username": f"{username}", "chatroom": "lobby"},
+                    "Login successful",
+                )
+            )
             self.chat_data.add_online_user(username, self.conn)
             self.chat_data.enter_room(
                 username, destination="lobby", source=self.chatroom
