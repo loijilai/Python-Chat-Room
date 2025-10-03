@@ -46,7 +46,7 @@ class ChatData:
         self.chatrooms = {"lobby": []}  # room_name -> [user1, user2, ...]
         self.lock = threading.RLock()
 
-        DATABASE_URL = os.getenv("DATABASE_URL")
+        DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+pysqlite:///chatapp.db")
         self.engine = create_engine(DATABASE_URL)
         metadata_obj = MetaData()
         self.users = Table(
@@ -82,6 +82,13 @@ class ChatData:
         with self.lock:
             self.online_users[username] = socket
 
+    def logout(self, username, chatroom):
+        with self.lock:
+            if username:
+                self.online_users.pop(username)
+            if chatroom:
+                self.chatrooms[chatroom].remove(username)
+
     def enter_room(self, username, destination, source=None):
         with self.lock:
             if source and source not in self.chatrooms:
@@ -112,20 +119,12 @@ class ChatData:
             return self.online_users.get(username, None)
 
     def get_room_info(self, room_name=None):
-        lines = []
         with self.lock:
             if not room_name:
-                for room_name, users in self.chatrooms.items():
-                    lines.append(f"Room: {room_name}")
-                    for user in users:
-                        lines.append(f"  - {user}")
-                    lines.append("")
+                return self.chatrooms
             else:
-                lines.append(f"Your current room: {room_name}")
-                for user in self.chatrooms[room_name]:
-                    lines.append(f"  - {user}")
-                lines.append("")
-        return "\n" + "\n".join(lines)
+                # TODO
+                pass
 
 
 class ClientHandler:
@@ -153,6 +152,9 @@ class ClientHandler:
         except Exception as e:
             print(f"run error {e}")
         finally:
+            self.chat_data.logout(self.username, self.chatroom)
+            self.conn.close()
+            self.active = False
             print(f"{self.username} cleanup")
 
     def send(self, text, socket=None):
@@ -218,7 +220,9 @@ class ClientHandler:
         request = self.new_recv()
         if request is None:
             return "auth"
-        msg = Message(**request)
+        msg = Message.model_validate(request)
+        if msg.data is None:
+            return "auth"
         username = msg.data["username"]
         password = msg.data["password"]
         if msg.type == "register":
@@ -267,35 +271,50 @@ class ClientHandler:
         return "auth"
 
     def lobby(self):
-        self.send("\nCommand: 'list', 'enter <room_name>', 'create <room_name>'")
-        cmd = self.recv()
-        if cmd is None:
+        request = self.new_recv()
+        if request is None:
             return "lobby"
-        cmd = cmd.lower()
-        if cmd == "list":
+        msg = Message.model_validate(request)
+        if msg.type == "list":
             info = self.chat_data.get_room_info()
-            self.send(info)
-        elif cmd.startswith("enter"):
-            _, room_name = cmd.split(" ")
+            self.new_send(info)
+        elif msg.type == "enter" and msg.data is not None:
+            room_name = msg.data["room"]
             try:
                 self.chat_data.enter_room(
                     self.username, destination=room_name, source=self.chatroom
                 )
                 self.chatroom = room_name
-                self.send(f"Welcome to {room_name}")
+                self.new_send(
+                    MessageFactory.ok("enter", message=f"Welcome to {room_name}")
+                )
                 return "chat"
             except RoomError as e:
-                self.send(str(e))
-        elif cmd.startswith("create"):
-            _, room_name = cmd.split(" ")
+                self.new_send(MessageFactory.error("enter", message=str(e)))
+        elif msg.type == "create" and msg.data is not None:
+            room_name = msg.data["room"]
             try:
                 self.chat_data.create_room(room_name)
-                self.send(f"{room_name} created successfully")
+                self.new_send(
+                    MessageFactory.ok(
+                        "create", message=f"{room_name} created successfully"
+                    )
+                )
             except RoomError as e:
-                self.send(str(e))
+                self.new_send(MessageFactory.error("create", message=str(e)))
+        elif msg.type == "logout":
+            self.chat_data.logout(self.username, self.chatroom)
+            self.new_send(
+                MessageFactory.ok(
+                    "logout", message=f"{self.username} logout successfully"
+                )
+            )
+            self.username = None
+            self.chatroom = None
+            return "auth"
         else:
-            self.send(f"Invalid command: {cmd}")
-        print(f"{self.username}: {cmd}")
+            self.send(f"Invalid command: {msg.to_dict()}")
+        print(f"{self.username}: {msg.to_dict()}")
         return "lobby"
 
     def chat(self):
@@ -343,7 +362,7 @@ def handle_client(conn, addr, chat_data: ChatData):
 
 def main():
     host = os.getenv("HOST")
-    port = int(os.getenv("PORT"))
+    port = int(os.getenv("PORT", "65432"))
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((host, port))
