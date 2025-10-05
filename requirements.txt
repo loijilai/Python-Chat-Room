@@ -1,0 +1,16 @@
+annotated-types==0.7.0
+black==25.9.0
+click==8.3.0
+customtkinter==5.2.2
+darkdetect==0.8.0
+mypy_extensions==1.1.0
+packaging==25.0
+pathspec==0.12.1
+platformdirs==4.4.0
+pydantic==2.11.9
+pydantic_core==2.33.2
+python-dotenv==1.1.1
+pytokens==0.1.10
+SQLAlchemy==2.0.43
+typing-inspection==0.4.2
+typing_extensions==4.15.0

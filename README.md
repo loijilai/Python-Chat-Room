@@ -49,7 +49,66 @@ In the diagram, blue arrows represent server responses/pushes, and red arrows re
 
 ---
 
-## Message Format Reference
+## How to run it?
+
+1. Generating a Self-Signed SSL/TLS Certificate
+
+   This project uses a self-signed certificate for demonstration purposes.
+   To generate server.key, server.csr, and server.crt, use the following commands:
+
+   ```bash
+   # 1. Generate a private key (server.key)
+   openssl genrsa -out server.key 2048
+
+   # 2. Create a certificate signing request (server.csr)
+   openssl req -new -key server.key -out server.csr
+
+   # 3. Generate a self-signed certificate valid for 365 days (server.crt)
+   openssl x509 -req -days 365 -in server.csr -signkey server.key -out server.crt
+   ```
+
+2. Virtual environment
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Run the server and client
+   ```bash
+   python server.py
+   python client.py
+   ```
+
+## How to use it?
+
+## How to Use
+
+1. Register an account and log in.
+
+   ![auth page](./diagrams/auth_page.png)
+
+2. On the **Lobby** page, you can:
+
+   ![lobby page](./diagrams/lobby_page.png)
+
+   - Create a new room
+   - Enter an existing room
+   - Log out
+
+   * Click the **Refresh** button to update the list of online users and rooms.
+
+3. On the **Chatroom** page, you can:
+
+   ![chat page](./diagrams/chat_page.png)
+
+   - Send messages
+   - Refresh the online user list
+   - Return to the lobby
+
+   * To send a private message to a specific user, use the format:
+     ```
+     \private <receiver> <your message>
+     ```
+
+## Message Format References
 
 ### **Client → Server**
 
@@ -218,3 +277,8 @@ Commands available after entering a chatroom.
      "message": "Error message"
    }
    ```
+
+## TODO
+
+1. Add friends
+2. Real-time update of online states
