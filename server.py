@@ -15,6 +15,7 @@ from sqlalchemy import (
 )
 from utils import hash_password, Message
 from typing import Optional, Any
+import traceback
 
 
 load_dotenv()
@@ -44,6 +45,7 @@ class ChatData:
     def __init__(self):
         self.online_users = {}  # username -> socket
         self.chatrooms = {"lobby": []}  # room_name -> [user1, user2, ...]
+        self.chatrooms["example"] = []  # for demo
         self.lock = threading.RLock()
 
         DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+pysqlite:///chatapp.db")
@@ -123,8 +125,7 @@ class ChatData:
             if not room_name:
                 return self.chatrooms
             else:
-                # TODO
-                pass
+                return {room_name: self.chatrooms[room_name]}
 
 
 class ClientHandler:
@@ -151,32 +152,14 @@ class ClientHandler:
                     break
         except Exception as e:
             print(f"run error {e}")
+            traceback.print_exc()
         finally:
             self.chat_data.logout(self.username, self.chatroom)
             self.conn.close()
             self.active = False
             print(f"{self.username} cleanup")
 
-    def send(self, text, socket=None):
-        try:
-            target = self.conn if socket is None else socket
-            target.sendall(text.encode("utf-8"))
-        except Exception as e:
-            print(f"send error {e}")
-            self.active = False
-
-    def recv(self) -> str | None:
-        try:
-            data = self.conn.recv(1024)
-            if not data:
-                self.active = False
-                return None
-            return data.decode("utf-8").strip()
-        except Exception as e:
-            print(f"recv error {e}")
-            self.active = False
-
-    def new_send(self, message_dict, socket=None):
+    def send(self, message_dict, socket=None):
         try:
             data = json.dumps(message_dict).encode("utf-8")
             header = len(data).to_bytes(4, byteorder="big")
@@ -186,7 +169,7 @@ class ClientHandler:
             print(f"send error {e}")
             self.active = False
 
-    def new_recv(self) -> str | None:
+    def recv(self) -> str | None:
         header = self.recv_exactly(4)
         if header is None:
             return None
@@ -210,31 +193,64 @@ class ClientHandler:
             print(f"recv error {e}")
             self.active = False
 
-    def broadcast(self, text):
-        room_users = self.chat_data.get_room_users(self.chatroom)
-        for username in room_users:
-            socket = self.chat_data.get_socket(username)
-            self.send(f"{self.username}: {text}", socket)
+    def send_message(self, sender, receiver, text):
+        if receiver == "public":
+            room_users = self.chat_data.get_room_users(self.chatroom)
+            for username in room_users:
+                socket = self.chat_data.get_socket(username)
+                self.send(
+                    MessageFactory.ok(
+                        "msg", {"to": "public", "from": sender, "text": text}
+                    ),
+                    socket,
+                )
+        else:
+            if receiver not in self.chat_data.get_room_users(self.chatroom):
+                self.send(
+                    MessageFactory.error(
+                        "msg", message=f"{receiver} not in {self.chatroom}"
+                    )
+                )
+                return "chat"
+            socket = self.chat_data.get_socket(receiver)
+            if socket:
+                self.send(
+                    MessageFactory.ok(
+                        "msg", {"to": receiver, "from": self.username, "text": text}
+                    ),
+                    socket,
+                )
+                # send one copy to sender
+                self.send(
+                    MessageFactory.ok(
+                        "msg",
+                        {"to": self.username, "from": self.username, "text": text},
+                    )
+                )
+            else:
+                self.send(MessageFactory.error("msg", message=f"{receiver} not exists"))
+            pass
 
     def auth(self):
-        request = self.new_recv()
+        request = self.recv()
         if request is None:
             return "auth"
         msg = Message.model_validate(request)
+        print(msg)
         if msg.data is None:
             return "auth"
         username = msg.data["username"]
         password = msg.data["password"]
         if msg.type == "register":
             if self.chat_data.is_registered(username):
-                self.new_send(
+                self.send(
                     MessageFactory.error(
                         "register", "Username already in use, try another one"
                     )
                 )
             else:
                 self.chat_data.add_user(username, password)
-                self.new_send(
+                self.send(
                     MessageFactory.ok(
                         "register", message="Register successfully! You can now login"
                     )
@@ -242,16 +258,16 @@ class ClientHandler:
 
         elif msg.type == "login":
             if not self.chat_data.is_registered(username):
-                self.new_send(
+                self.send(
                     MessageFactory.error(
                         "login", "Username not exists, try register first"
                     )
                 )
                 return "auth"
             if not self.chat_data.check_password(username, password):
-                self.new_send(MessageFactory.error("login", "Invalid password"))
+                self.send(MessageFactory.error("login", "Invalid password"))
                 return "auth"
-            self.new_send(
+            self.send(
                 MessageFactory.ok(
                     "login",
                     {"username": f"{username}", "chatroom": "lobby"},
@@ -266,18 +282,19 @@ class ClientHandler:
             self.chatroom = "lobby"
             return "lobby"
         else:
-            self.send(f"Invalid command: {cmd}")
+            print(f"Invalid command: {msg.to_dict()}")
 
         return "auth"
 
     def lobby(self):
-        request = self.new_recv()
+        request = self.recv()
         if request is None:
             return "lobby"
         msg = Message.model_validate(request)
+        print(msg)
         if msg.type == "list":
             info = self.chat_data.get_room_info()
-            self.new_send(info)
+            self.send(MessageFactory.ok("list", info))
         elif msg.type == "enter" and msg.data is not None:
             room_name = msg.data["room"]
             try:
@@ -285,26 +302,30 @@ class ClientHandler:
                     self.username, destination=room_name, source=self.chatroom
                 )
                 self.chatroom = room_name
-                self.new_send(
-                    MessageFactory.ok("enter", message=f"Welcome to {room_name}")
+                self.send(
+                    MessageFactory.ok(
+                        "enter",
+                        data={"username": self.username, "room": self.chatroom},
+                        message=f"Welcome to {self.chatroom}",
+                    )
                 )
                 return "chat"
             except RoomError as e:
-                self.new_send(MessageFactory.error("enter", message=str(e)))
+                self.send(MessageFactory.error("enter", message=str(e)))
         elif msg.type == "create" and msg.data is not None:
             room_name = msg.data["room"]
             try:
                 self.chat_data.create_room(room_name)
-                self.new_send(
+                self.send(
                     MessageFactory.ok(
                         "create", message=f"{room_name} created successfully"
                     )
                 )
             except RoomError as e:
-                self.new_send(MessageFactory.error("create", message=str(e)))
+                self.send(MessageFactory.error("create", message=str(e)))
         elif msg.type == "logout":
             self.chat_data.logout(self.username, self.chatroom)
-            self.new_send(
+            self.send(
                 MessageFactory.ok(
                     "logout", message=f"{self.username} logout successfully"
                 )
@@ -313,45 +334,44 @@ class ClientHandler:
             self.chatroom = None
             return "auth"
         else:
-            self.send(f"Invalid command: {msg.to_dict()}")
-        print(f"{self.username}: {msg.to_dict()}")
+            print(f"Invalid command: {msg.to_dict()}")
         return "lobby"
 
     def chat(self):
-        # self.send("Command: 'exit', 'list', 'msgall <text>', 'msg <username> <text>'")
-        cmd = self.recv()
-        if cmd is None:
+        request = self.recv()
+        if request is None:
             return "chat"
-        if cmd.lower().startswith("exit"):
+        msg = Message.model_validate(request)
+        print(msg)
+        if msg.type == "exit":
             try:
                 self.chat_data.enter_room(
                     self.username, destination="lobby", source=self.chatroom
                 )
-                self.send(f"Exit {self.chatroom}, back to lobby")
+                self.send(
+                    MessageFactory.ok(
+                        "exit", message=f"Exit {self.chatroom}, back to lobby"
+                    )
+                )
                 self.chatroom = "lobby"
                 return "lobby"
             except RoomError as e:
-                self.send(str(e))
+                self.send(MessageFactory.error("exit", str(e)))
 
             return "lobby"
-        elif cmd.lower().startswith("list"):
+        elif msg.type == "list":
             info = self.chat_data.get_room_info(self.chatroom)
-            self.send(info)
-        elif cmd.lower().startswith("msgall"):
-            _, text = cmd.split(" ")  # TODO
-            self.broadcast(text)
-        elif cmd.lower().startswith("msg"):
-            _, username, text = cmd.split(" ")  # TODO
-            if username not in self.chat_data.get_room_users(self.chatroom):
-                self.send(f"{username} not in {self.chatroom}")
-                return "chat"
-            socket = self.chat_data.get_socket(username)
-            if socket:
-                self.send(f"{self.username}: {text}", socket)
-            else:
-                self.send(f"{username} not exists")
+            self.send(MessageFactory.ok("list_room", info))
+        elif msg.type == "msg":
+            if msg.data is None:
+                return
+            text = msg.data["text"]
+            sender = msg.data["from"]
+            receiver = msg.data["to"]
+
+            self.send_message(sender, receiver, text)
         else:
-            self.send(f"Invalid command: {cmd}")
+            print(f"Invalid command: {msg.to_dict()}")
         return "chat"
 
 
