@@ -1,5 +1,13 @@
 # **Python Chat Room**
 
+## Introduction
+
+- Socket-based, multi-threaded chat system built with Python
+- Server: uses socket and threading for concurrent client handling
+- Client: built with Tkinter, featuring event-driven UI and background message receiver thread
+- Data & Security: user authentication via SQLite + SQLAlchemy, secured with SSL/TLS
+- Protocol: custom JSON messaging validated by Pydantic
+
 ## **Design Overview**
 
 ### **Server**
@@ -76,8 +84,6 @@ In the diagram, blue arrows represent server responses/pushes, and red arrows re
    python server.py
    python client.py
    ```
-
-## How to use it?
 
 ## How to Use
 
