@@ -87,9 +87,10 @@ class ChatData:
     def logout(self, username, chatroom):
         with self.lock:
             if username:
-                self.online_users.pop(username)
-            if chatroom:
-                self.chatrooms[chatroom].remove(username)
+                self.online_users.pop(username, None)
+            if chatroom and chatroom in self.chatrooms:
+                if username in self.chatrooms[chatroom]:
+                    self.chatrooms[chatroom].remove(username)
 
     def enter_room(self, username, destination, source=None):
         with self.lock:
@@ -112,9 +113,9 @@ class ChatData:
                 raise RoomError(f"{room_name} already exists")
             self.chatrooms[room_name] = []
 
-    def get_room_users(self, room_name):
+    def get_room_users(self, room_name) -> list:
         with self.lock:
-            return self.chatrooms.get(room_name, [])
+            return list(self.chatrooms.get(room_name, []))
 
     def get_socket(self, username):
         with self.lock:
@@ -123,9 +124,11 @@ class ChatData:
     def get_room_info(self, room_name=None):
         with self.lock:
             if not room_name:
-                return self.chatrooms
-            else:
-                return {room_name: self.chatrooms[room_name]}
+                # return a copy insead of the object itself
+                return {room: list(users) for room, users in self.chatrooms.items()}
+            if room_name not in self.chatrooms:
+                return {room_name: []}
+            return {room_name: list(self.chatrooms[room_name])}
 
 
 class ClientHandler:
@@ -154,10 +157,16 @@ class ClientHandler:
             print(f"run error {e}")
             traceback.print_exc()
         finally:
-            self.chat_data.logout(self.username, self.chatroom)
+            last_username = self.username
+            last_room = self.chatroom
+            self.chat_data.logout(last_username, last_room)
+            if last_username:
+                self.notify_lobby_state()
+                if last_room and last_room != "lobby":
+                    self.notify_room_state(last_room)
             self.conn.close()
             self.active = False
-            print(f"{self.username} cleanup")
+            print(f"{last_username} cleanup")
 
     def send(self, message_dict, socket=None):
         try:
@@ -192,6 +201,22 @@ class ClientHandler:
         except Exception as e:
             print(f"recv error {e}")
             self.active = False
+
+    def notify_lobby_state(self):
+        info = self.chat_data.get_room_info()
+        for username in self.chat_data.get_room_users("lobby"):
+            socket = self.chat_data.get_socket(username)
+            if socket:
+                self.send(MessageFactory.ok("list", info), socket)
+
+    def notify_room_state(self, room_name):
+        if not room_name:
+            return
+        info = self.chat_data.get_room_info(room_name)
+        for username in self.chat_data.get_room_users(room_name):
+            socket = self.chat_data.get_socket(username)
+            if socket:
+                self.send(MessageFactory.ok("list_room", info), socket)
 
     def send_message(self, sender, receiver, text):
         if receiver == "public":
@@ -287,6 +312,7 @@ class ClientHandler:
         return "auth"
 
     def lobby(self):
+        self.notify_lobby_state()
         request = self.recv()
         if request is None:
             return "lobby"
@@ -309,6 +335,7 @@ class ClientHandler:
                         message=f"Welcome to {self.chatroom}",
                     )
                 )
+                self.notify_lobby_state()
                 return "chat"
             except RoomError as e:
                 self.send(MessageFactory.error("enter", message=str(e)))
@@ -321,6 +348,7 @@ class ClientHandler:
                         "create", message=f"{room_name} created successfully"
                     )
                 )
+                self.notify_lobby_state()
             except RoomError as e:
                 self.send(MessageFactory.error("create", message=str(e)))
         elif msg.type == "logout":
@@ -330,6 +358,7 @@ class ClientHandler:
                     "logout", message=f"{self.username} logout successfully"
                 )
             )
+            self.notify_lobby_state()
             self.username = None
             self.chatroom = None
             return "auth"
@@ -338,6 +367,7 @@ class ClientHandler:
         return "lobby"
 
     def chat(self):
+        self.notify_room_state(self.chatroom)
         request = self.recv()
         if request is None:
             return "chat"
@@ -353,6 +383,7 @@ class ClientHandler:
                         "exit", message=f"Exit {self.chatroom}, back to lobby"
                     )
                 )
+                self.notify_room_state(self.chatroom)
                 self.chatroom = "lobby"
                 return "lobby"
             except RoomError as e:

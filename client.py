@@ -225,14 +225,14 @@ class ChatRoomPage(ttk.Frame):
 
         self.user_listbox = tk.Listbox(right_frame, height=20)
         self.user_listbox.pack(fill="y", expand=True)
-        ttk.Button(right_frame, text="Refresh", command=self.ui_list_request).pack(
-            side="bottom"
-        )
+        # ttk.Button(right_frame, text="Refresh", command=self.ui_list_request).pack(
+        #     side="bottom"
+        # )
 
         self.dispatcher.register_callback("exit", self.server_exit_ack)
         self.dispatcher.register_callback("list_room", self.server_list_ack)
         self.dispatcher.register_callback("msg", self.server_msg_ack)
-        self.ui_list_request()
+        # self.ui_list_request()
 
     def _append_message(self, sender, message, is_private):
         self.chat_display.config(state="normal")
@@ -274,8 +274,8 @@ class ChatRoomPage(ttk.Frame):
                 )
             )
 
-    def ui_list_request(self):
-        self.server_handler.send(MessageFactory.create("list"))
+    # def ui_list_request(self):
+    #     self.server_handler.send(MessageFactory.create("list"))
 
     # === Server Ack Handlers ===
     def server_exit_ack(self, msg: Message):
@@ -362,9 +362,9 @@ class LobbyPage(ttk.Frame):
         self.user_tree.column("members", width=320, anchor="w")
         self.user_tree.grid(column=0, row=3, columnspan=3, sticky="nsew")
 
-        ttk.Button(self, text="Refresh", command=self.ui_list_request).grid(
-            column=2, row=5, sticky=tk.E, pady=10
-        )
+        # ttk.Button(self, text="Refresh", command=self.ui_list_request).grid(
+        #     column=2, row=5, sticky=tk.E, pady=10
+        # )
 
         # ---- Logout ----
         ttk.Button(self, text="Logout", command=self.ui_logout_request).grid(
@@ -377,7 +377,7 @@ class LobbyPage(ttk.Frame):
         self.dispatcher.register_callback("logout", self.server_logout_ack)
         self.dispatcher.register_callback("enter", self.server_enter_room_ack)
         self.dispatcher.register_callback("create", self.server_create_room_ack)
-        self.ui_list_request()
+        # self.ui_list_request()
 
     # === UI Event Handlers ===
     def ui_create_room_request(self):
@@ -394,8 +394,8 @@ class LobbyPage(ttk.Frame):
             return
         self.server_handler.send(MessageFactory.create("enter", {"room": room_name}))
 
-    def ui_list_request(self):
-        self.server_handler.send(MessageFactory.create("list"))
+    # def ui_list_request(self):
+    #     self.server_handler.send(MessageFactory.create("list"))
 
     def ui_logout_request(self):
         self.server_handler.send(MessageFactory.create("logout"))
