@@ -351,8 +351,15 @@ class LobbyPage(ttk.Frame):
         )
 
         # ---- User list ----
-        self.user_tree = ttk.Treeview(self)
-        self.user_tree.heading("#0", text="Rooms / Users", anchor="w")
+        self.user_tree = ttk.Treeview(
+            self, columns=("online_count", "members"), show="tree headings"
+        )
+        self.user_tree.heading("#0", text="Room", anchor="w")
+        self.user_tree.heading("online_count", text="Online", anchor="center")
+        self.user_tree.heading("members", text="Members", anchor="w")
+        self.user_tree.column("#0", width=160, anchor="w")
+        self.user_tree.column("online_count", width=60, anchor="center")
+        self.user_tree.column("members", width=320, anchor="w")
         self.user_tree.grid(column=0, row=3, columnspan=3, sticky="nsew")
 
         ttk.Button(self, text="Refresh", command=self.ui_list_request).grid(
@@ -365,7 +372,7 @@ class LobbyPage(ttk.Frame):
         )
 
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(4, weight=1)
+        self.rowconfigure(3, weight=1)
         self.dispatcher.register_callback("list", self.server_list_ack)
         self.dispatcher.register_callback("logout", self.server_logout_ack)
         self.dispatcher.register_callback("enter", self.server_enter_room_ack)
@@ -388,7 +395,7 @@ class LobbyPage(ttk.Frame):
         self.server_handler.send(MessageFactory.create("enter", {"room": room_name}))
 
     def ui_list_request(self):
-        server_handler.send(MessageFactory.create("list"))
+        self.server_handler.send(MessageFactory.create("list"))
 
     def ui_logout_request(self):
         self.server_handler.send(MessageFactory.create("logout"))
@@ -422,9 +429,13 @@ class LobbyPage(ttk.Frame):
             self.user_tree.delete(item)
 
         for room, users in msg.data.items():
-            room_id = self.user_tree.insert("", "end", text=f"Room: {room}")
-            for user in users:
-                self.user_tree.insert(room_id, "end", text=f"- {user}")
+            members = ", ".join(users) if users else "No users online"
+            self.user_tree.insert(
+                "",
+                "end",
+                text=room,
+                values=(len(users), members),
+            )
 
 
 class App(tk.Tk):
