@@ -8,6 +8,11 @@
 - Data & Security: user authentication via SQLite + SQLAlchemy, secured with SSL/TLS
 - Protocol: custom JSON messaging validated by Pydantic
 
+## Updates
+
+- Lobby and chat presence now refresh in real time; no manual refresh required to see online status changes.
+- Password storage now includes a per-user salt, hardening credential security.
+
 ## **Design Overview**
 
 ### **Server**
@@ -287,4 +292,3 @@ Commands available after entering a chatroom.
 ## TODO
 
 1. Add friends
-2. Real-time update of online states

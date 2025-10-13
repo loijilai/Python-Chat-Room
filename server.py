@@ -13,7 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
 )
-from utils import hash_password, Message
+from utils import hash_password, generate_salt, Message
 from typing import Optional, Any
 import traceback
 
@@ -57,6 +57,7 @@ class ChatData:
             Column("id", Integer, primary_key=True),
             Column("username", String, nullable=False),
             Column("password", String, nullable=False),
+            Column("salt", String, nullable=False),
         )
         metadata_obj.create_all(self.engine)
 
@@ -67,8 +68,9 @@ class ChatData:
             return result is not None
 
     def add_user(self, username, password):
+        salt = generate_salt()
         stmt = self.users.insert().values(
-            username=username, password=hash_password(password)
+            username=username, password=hash_password(password, salt), salt=salt
         )
         with self.engine.connect() as conn:
             conn.execute(stmt)
@@ -78,7 +80,13 @@ class ChatData:
         stmt = self.users.select().where(self.users.c.username == username)
         with self.engine.connect() as conn:
             result = conn.execute(stmt).fetchone()
-            return result.password == hash_password(password) if result else False
+            if not result:
+                return False
+            return (
+                result.password == hash_password(password, result.salt)
+                if result
+                else False
+            )
 
     def add_online_user(self, username, socket):
         with self.lock:
